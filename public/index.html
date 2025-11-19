@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Mikrotik Bandwidth Monitor</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 18px; background: #fff; color: #222; }
+    header { text-align:center; }
+    .controls { display:flex; gap:10px; align-items:center; margin-top:12px; }
+    .left { flex:1; }
+    .status { display:flex; justify-content:space-between; margin-top:18px; padding-top:12px; border-top:1px solid #ddd; }
+    .big { font-size:32px; font-weight:700; }
+    #chartContainer { width:100%; max-width:1000px; margin: 24px auto; }
+    button { padding: 12px 20px; font-size:16px; cursor:pointer; }
+    select { padding:10px; font-size:16px; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Mikrotik Bandwidth Monitor</h1>
+    <div>IP/Hostname <span id="hostLabel"></span> &nbsp; &nbsp; Interface: <span id="ifaceLabel"></span></div>
+  </header>
+
+  <div id="chartContainer">
+    <canvas id="bwChart" height="200"></canvas>
+  </div>
+
+  <div class="controls">
+    <div class="left">
+      Interface
+      <select id="ifaceSelect">
+        <option>ether1</option>
+        <option>ether2</option>
+        <option>bridge</option>
+      </select>
+    </div>
+    <div style="margin-left:auto">
+      <button id="pauseBtn">Pausar</button>
+    </div>
+  </div>
+
+  <div class="status">
+    <div>Status: <span id="connStatus">Conectado</span></div>
+    <div>Última leitura: <span id="lastRead">--:--:--</span></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
