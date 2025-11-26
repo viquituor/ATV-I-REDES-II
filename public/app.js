@@ -50,9 +50,9 @@ socket.on('metrics', (m) => {
   lastRead.textContent = time.toLocaleTimeString();
   data.labels.push(time.toLocaleTimeString());
   data.labels.shift();
-  data.datasets[0].data.push(Number((m.rx_mbps).toFixed(3)));
+  data.datasets[0].data.push(Number((m.rx_mbps || 0).toFixed(3)));
   data.datasets[0].data.shift();
-  data.datasets[1].data.push(Number((m.tx_mbps).toFixed(3)));
+  data.datasets[1].data.push(Number((m.tx_mbps || 0).toFixed(3)));
   data.datasets[1].data.shift();
   chart.update('none');
 });

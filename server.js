@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const { Client } = require('ssh2');
+const snmp = require('net-snmp');
 const cors = require('cors');
 
 const app = express();
@@ -12,116 +12,127 @@ app.use(express.static('public'));
 const server = http.createServer(app);
 const io = new Server(server);
 
+// Configurações do .env
 const {
   MIKROTIK_HOST,
-  MIKROTIK_PORT = 22,
-  MIKROTIK_USER,
-  MIKROTIK_PASS,
-  INTERFACE_NAME = 'ether1',
+  INTERFACE_OID_INDEX = '2', 
+  SNMP_COMMUNITY = 'public',
   POLL_INTERVAL_MS = 1000,
   SERVER_PORT = 3000
 } = process.env;
 
-let ssh = null;
+const oidRx = `1.3.6.1.2.1.31.1.1.1.6.${INTERFACE_OID_INDEX}`;
+const oidTx = `1.3.6.1.2.1.31.1.1.1.10.${INTERFACE_OID_INDEX}`;
+
+let session = null;
 let pollInterval = parseInt(POLL_INTERVAL_MS, 10) || 1000;
 
-function connectSSH() {
-  if (ssh) {
-    try { ssh.end(); } catch(e){}
-    ssh = null;
+let previous = { rx: 0, tx: 0, time: 0 };
+
+function createSession() {
+  if (session) {
+    try { session.close(); } catch(e){}
   }
-  ssh = new Client();
-  ssh.on('ready', () => {
-    console.log('SSH conectado ao Mikrotik');
-  }).on('error', (err) => {
-    console.error('Erro SSH:', err.message);
-  }).on('end', () => {
-    console.log('SSH finalizado');
-  }).connect({
-    host: MIKROTIK_HOST,
-    port: Number(MIKROTIK_PORT),
-    username: MIKROTIK_USER,
-    password: MIKROTIK_PASS,
-    readyTimeout: 20000
+  session = snmp.createSession(MIKROTIK_HOST, SNMP_COMMUNITY, {
+    version: snmp.Version2c,
+    timeout: 3000
+  });
+  console.log(`Sessão SNMP criada para ${MIKROTIK_HOST}`);
+}
+
+// --- FUNÇÃO CORRIGIDA (BLINDADA) ---
+function parseSnmpValue(value) {
+  if (Buffer.isBuffer(value)) {
+    // Se o buffer já tem 8 bytes, lê direto
+    if (value.length === 8) {
+      return Number(value.readBigUInt64BE());
+    }
+    // Se for menor que 8 bytes (otimização do protocolo), preenche com zeros
+    if (value.length < 8) {
+      const padded = Buffer.alloc(8); // Cria buffer de 8 zeros
+      value.copy(padded, 8 - value.length); // Copia o valor para o final (Big Endian)
+      return Number(padded.readBigUInt64BE());
+    }
+  }
+  return Number(value || 0);
+}
+
+function fetchSNMP(callback) {
+  if (!session) createSession();
+
+  const oids = [oidRx, oidTx];
+
+  session.get(oids, (error, varbinds) => {
+    if (error) {
+      console.error('Erro SNMP:', error.toString());
+      session = null; 
+      return;
+    }
+
+    if (snmp.isVarbindError(varbinds[0]) || snmp.isVarbindError(varbinds[1])) {
+      console.error('Erro OID. Verifique INTERFACE_OID_INDEX no .env');
+      return;
+    }
+
+    const currentRxBytes = parseSnmpValue(varbinds[0].value);
+    const currentTxBytes = parseSnmpValue(varbinds[1].value);
+    const currentTime = Date.now();
+
+    // Debug: Mostra os valores reais no terminal
+    console.log(`SNMP -> Rx: ${currentRxBytes} | Tx: ${currentTxBytes}`);
+
+    if (previous.time === 0) {
+      previous = { rx: currentRxBytes, tx: currentTxBytes, time: currentTime };
+      return;
+    }
+
+    const timeDiffSeconds = (currentTime - previous.time) / 1000;
+    if (timeDiffSeconds < 0.1) return; 
+
+    let diffRx = currentRxBytes - previous.rx;
+    let diffTx = currentTxBytes - previous.tx;
+
+    if (diffRx < 0) diffRx = 0;
+    if (diffTx < 0) diffTx = 0;
+
+    const rx_bps = (diffRx * 8) / timeDiffSeconds;
+    const tx_bps = (diffTx * 8) / timeDiffSeconds;
+
+    previous = { rx: currentRxBytes, tx: currentTxBytes, time: currentTime };
+
+    callback({ rx_bps, tx_bps });
   });
 }
 
-function parseMonitorOutput(raw) {
-  const rxMatch = raw.match(/rx-bits-per-second[:\s]+([0-9]+)/i);
-  const txMatch = raw.match(/tx-bits-per-second[:\s]+([0-9]+)/i);
-  if (rxMatch && txMatch) {
-    const rx = Number(rxMatch[1]);
-    const tx = Number(txMatch[1]);
-    return { rx_bps: rx, tx_bps: tx };
-  }
-  const rxMbMatch = raw.match(/Rx[:\s]+([0-9.,]+)\s*Mb/i);
-  const txMbMatch = raw.match(/Tx[:\s]+([0-9.,]+)\s*Mb/i);
-  if (rxMbMatch && txMbMatch) {
-    const rx = parseFloat(rxMbMatch[1].replace(',', '.')) * 1e6;
-    const tx = parseFloat(txMbMatch[1].replace(',', '.')) * 1e6;
-    return { rx_bps: rx, tx_bps: tx };
-  }
-  return null;
-}
-
-function doMonitorOnce(callback) {
-  if (!ssh) {
-    console.log('SSH não conectado. Tentando conectar...');
-    connectSSH();
-    setTimeout(()=>{}, 500);
-    return;
-  }
-  try {
-    ssh.exec(`/interface monitor-traffic ${INTERFACE_NAME} once`, (err, stream) => {
-      if (err) {
-        console.error('Erro exec:', err.message);
-        return;
-      }
-      let data = '';
-      stream.on('data', chunk => data += chunk.toString());
-      stream.on('close', () => {
-        const parsed = parseMonitorOutput(data);
-        if (parsed) {
-          callback(parsed);
-        } else {
-          console.warn('Não foi possível parsear resposta do monitor-traffic:', data);
-        }
-      });
-    });
-  } catch (e) {
-    console.error('Erro ao executar comando SSH:', e.message);
-  }
-}
-
 io.on('connection', (socket) => {
-  console.log('Cliente conectado via socket.io:', socket.id);
-  socket.emit('config', { interface: INTERFACE_NAME, pollIntervalMs: pollInterval });
+  console.log('Cliente conectado (Web)');
+  
+  socket.emit('config', { 
+    interface: `SNMP Index ${INTERFACE_OID_INDEX}`, 
+    pollIntervalMs: pollInterval 
+  });
 
   let running = true;
   const intervalHandle = setInterval(() => {
     if (!running) return;
-    doMonitorOnce((v) => {
+    fetchSNMP((metrics) => {
       const now = Date.now();
       io.emit('metrics', {
         ts: now,
-        rx_bps: v.rx_bps,
-        tx_bps: v.tx_bps,
-        rx_mbps: (v.rx_bps / 1e6),
-        tx_mbps: (v.tx_bps / 1e6)
+        rx_bps: metrics.rx_bps,
+        tx_bps: metrics.tx_bps,
+        rx_mbps: (metrics.rx_bps / 1e6),
+        tx_mbps: (metrics.tx_bps / 1e6)
       });
     });
   }, pollInterval);
 
-  socket.on('pause', () => { running = false; });
-  socket.on('resume', () => { running = true; });
-
   socket.on('disconnect', () => {
     clearInterval(intervalHandle);
-    console.log('Cliente desconectado', socket.id);
   });
 });
 
 server.listen(SERVER_PORT, () => {
   console.log(`Servidor rodando em http://localhost:${SERVER_PORT}`);
-  connectSSH();
+  createSession();
 });
