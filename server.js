@@ -40,7 +40,6 @@ function createSession() {
   console.log(`Sessão SNMP criada para ${MIKROTIK_HOST}`);
 }
 
-// --- FUNÇÃO CORRIGIDA (BLINDADA) ---
 function parseSnmpValue(value) {
   if (Buffer.isBuffer(value)) {
     // Se o buffer já tem 8 bytes, lê direto
@@ -78,7 +77,7 @@ function fetchSNMP(callback) {
     const currentTxBytes = parseSnmpValue(varbinds[1].value);
     const currentTime = Date.now();
 
-    // Debug: Mostra os valores reais no terminal
+  
     console.log(`SNMP -> Rx: ${currentRxBytes} | Tx: ${currentTxBytes}`);
 
     if (previous.time === 0) {
